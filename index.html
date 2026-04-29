@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MultiLLM - 多模型对话平台</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;overflow:hidden;height:100vh}
+#root{height:100vh;display:flex;flex-direction:column}
+.scrollbar::-webkit-scrollbar{width:6px}
+.scrollbar::-webkit-scrollbar-track{background:transparent}
+.scrollbar::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}
+.scrollbar::-webkit-scrollbar-thumb:hover{background:#64748b}
+@keyframes pulse-dot{0%,100%{opacity:0.3}50%{opacity:1}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.dot-anim span{animation:pulse-dot 1.4s infinite;margin:0 2px}
+.dot-anim span:nth-child(2){animation-delay:0.2s}
+.dot-anim span:nth-child(3){animation-delay:0.4s}
+.model-btn{border:2px solid transparent;transition:all 0.2s}
+.model-btn.active{border-color:currentColor;box-shadow:0 0 12px rgba(99,102,241,0.3)}
+textarea{resize:none}
+.msg-content p{margin:4px 0}
+.msg-content pre{background:#1e293b;padding:8px 12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:13px}
+.msg-content code{background:#334155;padding:1px 4px;border-radius:3px;font-size:13px}
+.msg-content pre code{background:none;padding:0}
+</style>
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh">
+<div style="text-align:center">
+<div style="width:40px;height:40px;border:3px solid #334155;border-top-color:#6366f1;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
+<div style="color:#94a3b8;font-size:15px">正在加载 MultiLLM...</div>
+</div></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useEffect,useRef,useContext,createContext,useCallback}=React;
+var E=React.createElement;
+var MODELS=[
+  {id:"deepseek",name:"DeepSeek",color:"#6366f1",bg:"rgba(99,102,241,0.08)",border:"rgba(99,102,241,0.2)",api:"https://api.deepseek.com/v1/chat/completions",model:"deepseek-chat",type:"openai",searchModel:null,searchTool:null},
+  {id:"chatgpt",name:"ChatGPT",color:"#22c55e",bg:"rgba(34,197,94,0.08)",border:"rgba(34,197,94,0.2)",api:"https://api.openai.com/v1/chat/completions",model:"gpt-4o",type:"openai",searchModel:"gpt-4o-search-preview",searchTool:null},
+  {id:"gemini",name:"Gemini",color:"#f59e0b",bg:"rgba(245,158,11,0.08)",border:"rgba(245,158,11,0.2)",api:"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",model:"gemini-2.5-flash",type:"gemini",searchModel:null,searchTool:{google_search:{}}},
+  {id:"glm",name:"GLM",color:"#a855f7",bg:"rgba(168,85,247,0.08)",border:"rgba(168,85,247,0.2)",api:"https://open.bigmodel.cn/api/paas/v4/chat/completions",model:"glm-4-plus",type:"openai",searchModel:null,searchTool:{type:"web_search",web_search:{enable:true}}}
+];
+// Crypto
+async function deriveKey(pw,salt){var t=new TextEncoder;var k=await crypto.subtle.importKey("raw",t.encode(pw),"PBKDF2",false,["deriveKey"]);return crypto.subtle.deriveKey({name:"PBKDF2",salt:t.encode(salt),iterations:600000,hash:"SHA-256"},k,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);}
+async function encryptData(key,data){var iv=crypto.getRandomValues(new Uint8Array(12));var ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,new TextEncoder().encode(data));var a=new Uint8Array(iv.length+ct.byteLength);a.set(iv);a.set(new Uint8Array(ct),iv.length);return btoa(String.fromCharCode.apply(null,a));}
+async function decryptData(key,s){try{var a=Uint8Array.from(atob(s),function(c){return c.charCodeAt(0)});var iv=a.slice(0,12);var ct=a.slice(12);var d=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,ct);return new TextDecoder().decode(d);}catch(e){return null;}}
+function getStoredAuth(){try{var d=JSON.parse(localStorage.getItem("_ma")||"{}");return{salt:d.s||"",hash:d.h||"",keys:d.k||""};}catch(e){return{salt:"",hash:"",keys:""};}}
+function saveAuth(salt,hash,keys){localStorage.setItem("_ma",JSON.stringify({s:salt,h:hash,k:keys}));}
+async function checkPassword(pw,salt,hash){var k=await deriveKey(pw,salt);var a=Uint8Array.from(atob(hash),function(c){return c.charCodeAt(0)});try{await crypto.subtle.decrypt({name:"AES-GCM",iv:a.slice(0,12)},k,a.slice(12));return true;}catch(e){return false;}}
+async function createHash(pw,salt){var k=await deriveKey(pw,salt);var iv=crypto.getRandomValues(new Uint8Array(12));var ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},k,new TextEncoder().encode("OK"));var a=new Uint8Array(iv.length+ct.byteLength);a.set(iv);a.set(new Uint8Array(ct),iv.length);return btoa(String.fromCharCode.apply(null,a));}
+// Stream APIs
+async function streamOpenAI(url,key,model,msgs,signal,cb,opts){
+  opts=opts||{};var body={model:model,messages:msgs,stream:true};if(opts.tools&&opts.tools.length)body.tools=opts.tools;
+  var res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify(body),signal:signal});
+  if(!res.ok){var t=await res.text();throw new Error(t.slice(0,200));}
+  var reader=res.body.getReader(),decoder=new TextDecoder(),buf="";
+  while(true){var r=await reader.read();if(r.done)break;buf+=decoder.decode(r.value,{stream:true});
+    var lines=buf.split("\n");buf=lines.pop()||"";
+    for(var i=0;i<lines.length;i++){var s=lines[i].trim();if(!s||s.indexOf("data:")!==0)continue;
+      var d=s.slice(5).trim();if(d==="[DONE]"){cb({done:true});return;}
+      try{var j=JSON.parse(d),c=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content;if(c)cb({content:c});}catch(e){}}
+  }cb({done:true});
+}
+async function streamGemini(url,key,model,msgs,signal,cb,opts){
+  opts=opts||{};var contents=msgs.filter(function(m){return m.role!=="system"}).map(function(m){return{role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}});
+  var sysMsg=msgs.find(function(m){return m.role==="system"});var u=url+"?alt=sse&key="+key;
+  var body={contents:contents};if(sysMsg)body.systemInstruction={parts:[{text:sysMsg.content}]};if(opts.tools&&opts.tools.length)body.tools=opts.tools;
+  var res=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:signal});
+  if(!res.ok){var t=await res.text();throw new Error(t.slice(0,200));}
+  var reader=res.body.getReader(),decoder=new TextDecoder(),buf="";
+  while(true){var r=await reader.read();if(r.done)break;buf+=decoder.decode(r.value,{stream:true});
+    var lines=buf.split("\n");buf=lines.pop()||"";
+    for(var i=0;i<lines.length;i++){var s=lines[i].trim();if(!s||s.indexOf("data:")!==0)continue;
+      var d=s.slice(5).trim();
+      try{var j=JSON.parse(d),c=j.candidates&&j.candidates[0]&&j.candidates[0].content&&j.candidates[0].content.parts&&j.candidates[0].content.parts[0]&&j.candidates[0].content.parts[0].text;if(c)cb({content:c});}catch(e){}}
+  }cb({done:true});
+}
+var AuthCtx=createContext(null);
+// Icons
+function I(n,s){s=s||16;var a={width:s,height:s,viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:2,strokeLinecap:"round",strokeLinejoin:"round"};
+if(n==="lock")return E("svg",a,E("g",null,E("rect",{x:3,y:11,width:18,height:11,rx:2,ry:2}),E("path",{d:"M7 11V7a5 5 0 0110 0v4"})));
+if(n==="unlock")return E("svg",a,E("g",null,E("rect",{x:3,y:11,width:18,height:11,rx:2,ry:2}),E("path",{d:"M7 11V7a5 5 0 019.9-1"})));
+if(n==="send")return E("svg",a,E("g",null,E("line",{x1:22,y1:2,x2:11,y2:13}),E("polygon",{points:"22 2 15 22 11 13 2 9 22 2"})));
+if(n==="settings")return E("svg",a,E("g",null,E("circle",{cx:12,cy:12,r:3}),E("path",{d:"M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"})));
+if(n==="trash")return E("svg",a,E("g",null,E("polyline",{points:"3 6 5 6 21 6"}),E("path",{d:"M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"})));
+if(n==="file")return E("svg",a,E("g",null,E("path",{d:"M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"}),E("polyline",{points:"14 2 14 8 20 8"}),E("line",{x1:16,y1:13,x2:8,y2:13}),E("line",{x1:16,y1:17,x2:8,y2:17}),E("polyline",{points:"10 9 9 9 8 9"})));
+if(n==="search")return E("svg",a,E("g",null,E("circle",{cx:11,cy:11,r:8}),E("line",{x1:21,y1:21,x2:16.65,y2:16.65})));
+if(n==="expand")return E("svg",a,E("g",null,E("polyline",{points:"15 3 21 3 21 9"}),E("polyline",{points:"9 21 3 21 3 15"}),E("line",{x1:21,y1:3,x2:14,y2:10}),E("line",{x1:3,y1:21,x2:10,y2:14})));
+if(n==="collapse")return E("svg",a,E("g",null,E("polyline",{points:"4 14 10 14 10 20"}),E("polyline",{points:"20 10 14 10 14 4"}),E("line",{x1:10,y1:14,x2:4,y2:20}),E("line",{x1:14,y1:10,x2:20,y2:4})));
+if(n==="x")return E("svg",a,E("g",null,E("line",{x1:18,y1:6,x2:6,y2:18}),E("line",{x1:6,y1:6,x2:18,y2:18})));
+if(n==="shield")return E("svg",a,E("g",null,E("path",{d:"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"})));
+if(n==="eye")return E("svg",a,E("g",null,E("path",{d:"M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"}),E("circle",{cx:12,cy:12,r:3})));
+if(n==="eyeoff")return E("svg",a,E("g",null,E("path",{d:"M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"}),E("line",{x1:1,y1:1,x2:23,y2:23})));
+if(n==="check")return E("svg",a,E("polyline",{points:"20 6 9 17 4 12"}));
+if(n==="alert")return E("svg",a,E("g",null,E("path",{d:"M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"}),E("line",{x1:12,y1:9,x2:12,y2:13}),E("line",{x1:12,y1:17,x2:12.01,y2:17})));
+return null;}
+// Markdown
+function md(t){if(!t)return"";t=t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");t=t.replace(/```(\w*)\n([\s\S]*?)```/g,function(_,lang,code){return"<pre><code>"+code.replace(/\n$/,"")+"</code></pre>"});t=t.replace(/`([^`]+)`/g,"<code>$1</code>");t=t.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");t=t.replace(/\*(.+?)\*/g,"<em>$1</em>");t=t.replace(/^### (.+)$/gm,"<h3 style=\"font-size:16px;font-weight:600;margin:12px 0 4px;color:#f1f5f9\">$1</h3>");t=t.replace(/^## (.+)$/gm,"<h2 style=\"font-size:18px;font-weight:600;margin:14px 0 4px;color:#f1f5f9\">$1</h2>");t=t.replace(/^# (.+)$/gm,"<h1 style=\"font-size:20px;font-weight:700;margin:16px 0 4px;color:#f8fafc\">$1</h1>");t=t.replace(/^- (.+)$/gm,"<li>$1</li>");t=t.replace(/(<li>[\s\S]*?<\/li>)/g,"<ul style=\"padding-left:20px;margin:4px 0\">$1</ul>");t=t.replace(/\n\n/g,"</p><p>");t="<p>"+t+"</p>";t=t.replace(/<p>\s*<\/p>/g,"");return t;}
+// === Components ===
+
+function Msg(_p){var msg=_p.msg;var h=md(msg.content);return E("div",{className:"mb-3 "+(msg.role&&msg.role!=="user"?"":"flex justify-end")},msg.role&&msg.role!=="user"?E("div",{className:"msg-content",style:{fontSize:"14px",lineHeight:"1.7",color:"#cbd5e1"},dangerouslySetInnerHTML:{__html:h}}):E("div",{className:"max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md",style:{background:"#6366f1",color:"#fff",fontSize:"14px",lineHeight:"1.6",whiteSpace:"pre-wrap",wordBreak:"break-word"}},msg.content));}
+
+function Panel(_p){var model=_p.model,state=_p.state,onExpand=_p.onExpand,onClear=_p.onClear;
+  var id=model.id,name=model.name,color=model.color,bg=model.bg,border=model.border;
+  var s=state||{},msgs=s.messages||[],streaming=s.streaming||false,sc=s.streamingContent||"",error=s.error||"",thinking=s.thinking||false;
+  var cr=useRef(null);
+  useEffect(function(){if(cr.current)cr.current.scrollTop=cr.current.scrollHeight;},[msgs,sc]);
+  return E("div",{className:"flex flex-col rounded-xl overflow-hidden",style:{background:"#1e293b",border:"1px solid "+border,height:"100%"}},
+    E("div",{className:"flex items-center justify-between px-3 py-2.5 shrink-0",style:{borderBottom:"1px solid "+border,background:bg}},
+      E("div",{className:"flex items-center gap-2"},
+        E("div",{style:{width:8,height:8,borderRadius:"50%",background:color,boxShadow:"0 0 6px "+color}}),
+        E("span",{style:{fontSize:"13px",fontWeight:600,color:color}}," "+name)),
+      E("div",{className:"flex items-center gap-1"},
+        E("button",{onClick:onClear,className:"p-1 rounded hover:bg-white/10 transition",style:{color:"#94a3b8"},title:"清空"},I("trash",14)),
+        E("button",{onClick:onExpand,className:"p-1 rounded hover:bg-white/10 transition",style:{color:"#94a3b8"},title:"展开"},I("expand",14)))),
+    E("div",{ref:cr,className:"flex-1 overflow-y-auto px-3 py-2 scrollbar"},
+      msgs.length===0&&!streaming&&!thinking?E("div",{className:"flex items-center justify-center h-full",style:{color:"#475569",fontSize:"13px"}},"等待输入..."):null,
+      msgs.map(function(m,i){return E(Msg,{key:i,msg:m});}),
+      thinking&&!sc?E("div",{className:"flex items-center gap-1.5 py-2",style:{color:"#64748b",fontSize:"13px"}},E("div",{style:{width:6,height:6,borderRadius:"50%",background:color,animation:"pulse-dot 1s infinite"}}),"思考中..."):null,
+      sc?E("div",{className:"msg-content py-1",style:{fontSize:"14px",lineHeight:"1.7",color:"#cbd5e1"},dangerouslySetInnerHTML:{__html:md(sc)+"<span style=\"display:inline-block;width:8px;height:14px;background:"+color+";animation:pulse-dot 0.8s infinite;vertical-align:middle;margin-left:2px;border-radius:2px\"></span>"}}):null,
+      error?E("div",{className:"py-2 px-3 rounded-lg",style:{background:"rgba(239,68,68,0.1)",color:"#f87171",fontSize:"13px",border:"1px solid rgba(239,68,68,0.2)"}},E("strong",null,"错误: "),error):null));}
+
+function Detail(_p){var model=_p.model,state=_p.state,onBack=_p.onBack,onClear=_p.onClear;
+  var id=model.id,name=model.name,color=model.color,bg=model.bg,border=model.border;
+  var s=state||{},msgs=s.messages||[];
+  var ir=useRef(null),cr=useRef(null);
+  var _i=useState(""),input=_i[0],setInput=_i[1];
+  var _k=useContext(AuthCtx),keys=_k.keys;
+  var _m=useState(function(){var sm=(state||{}).messages||[];return sm.length?sm.map(function(m){return{role:m.role,content:m.content}}):[];}),detailMsgs=_m[0],setDetailMsgs=_m[1];
+  var _s=useState(false),ds=_s[0],setDS=_s[1];
+  var _c=useState(""),dc=_c[0],setDC=_c[1];
+  var _e=useState(""),de=_e[0],setDE=_e[1];
+  var ab=useRef(null);
+  useEffect(function(){return function(){if(ab.current)ab.current.abort();};},[]);
+  useEffect(function(){if(cr.current)cr.current.scrollTop=cr.current.scrollHeight;},[detailMsgs,dc]);
+  var send=useCallback(async function(){
+    var q=input.trim();if(!q||ds)return;setInput("");
+    var ak=keys&&keys[id];if(!ak){setDE("请先设置 "+name+" API Key");return;}setDE("");
+    var um={role:"user",content:q};
+    var nm=[].concat(detailMsgs,[um]);setDetailMsgs(nm);setDS(true);setDC("");
+    var ac=new AbortController();ab.current=ac;
+    try{
+      var m=MODELS.find(function(x){return x.id===id});
+      var ma=nm.map(function(x){return{role:x.role,content:x.content}});
+      if(m.type==="gemini"){await streamGemini(m.api,ak,m.model,ma,ac.signal,function(d){if(d.content)setDC(function(p){return p+d.content});if(d.done)setDS(false);});}
+      else{await streamOpenAI(m.api,ak,m.model,ma,ac.signal,function(d){if(d.content)setDC(function(p){return p+d.content});if(d.done)setDS(false);});}
+    }catch(e){if(e.name!=="AbortError"){setDE(e.message);setDS(false);}}
+  },[input,ds,detailMsgs,id,keys]);
+  useEffect(function(){if(!ds&&dc){setDetailMsgs(function(p){return p.concat([{role:"assistant",content:dc}])});setDC("");}},[ds]);
+  var hk=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}};
+  return E("div",{className:"flex flex-col h-full"},
+    E("div",{className:"flex items-center justify-between px-3 py-2.5 shrink-0 rounded-t-xl",style:{background:bg,borderBottom:"1px solid "+border}},
+      E("div",{className:"flex items-center gap-2"},
+        E("button",{onClick:onBack,className:"p-1 rounded hover:bg-white/10 transition",style:{color:"#94a3b8"}},I("collapse",14)),
+        E("div",{style:{width:8,height:8,borderRadius:"50%",background:color,boxShadow:"0 0 6px "+color}}),
+        E("span",{style:{fontSize:"13px",fontWeight:600,color:color}}," "+name+" (独立会话)")),
+      E("button",{onClick:onClear,className:"p-1 rounded hover:bg-white/10 transition",style:{color:"#94a3b8"},title:"清空"},I("trash",14))),
+    E("div",{ref:cr,className:"flex-1 overflow-y-auto px-3 py-2 scrollbar"},
+      detailMsgs.length===0?E("div",{className:"flex items-center justify-center h-full",style:{color:"#475569",fontSize:"13px"}},"与 "+name+" 开始独立对话"):null,
+      detailMsgs.map(function(m,i){return E(Msg,{key:i,msg:m});}),
+      ds&&dc?E("div",{className:"msg-content py-1",style:{fontSize:"14px",lineHeight:"1.7",color:"#cbd5e1"},dangerouslySetInnerHTML:{__html:md(dc)+"<span style=\"display:inline-block;width:8px;height:14px;background:"+color+";animation:pulse-dot 0.8s infinite;vertical-align:middle;margin-left:2px;border-radius:2px\"></span>"}}):null,
+      de?E("div",{className:"py-2 px-3 rounded-lg m-2",style:{background:"rgba(239,68,68,0.1)",color:"#f87171",fontSize:"13px",border:"1px solid rgba(239,68,68,0.2)"}},de):null),
+    E("div",{className:"p-2 shrink-0",style:{borderTop:"1px solid "+border}},
+      E("div",{className:"flex gap-2"},
+        E("textarea",{ref:ir,value:input,onChange:function(e){setInput(e.target.value)},onKeyDown:hk,placeholder:"输入消息... (Enter 发送)",rows:2,className:"flex-1 px-3 py-2 rounded-lg outline-none scrollbar",style:{background:"#0f172a",border:"1px solid #334155",color:"#e2e8f0",fontSize:"14px",fontFamily:"inherit"}}),
+        E("button",{onClick:send,disabled:ds,className:"px-3 rounded-lg transition",style:{background:ds?"#334155":color,color:"#fff",fontSize:"13px",opacity:ds?0.6:1,cursor:ds?"not-allowed":"pointer"}},ds?E("span",{className:"dot-anim"},E("span",null,"."),E("span",null,"."),E("span",null,".")):I("send",16)))));}
+
+function Input(_p){var onSend=_p.onSend,disabled=_p.disabled,activeModels=_p.activeModels;
+  var _t=useState(""),text=_t[0],setText=_t[1];
+  var _f=useState(null),file=_f[0],setFile=_f[1];
+  var _s=useState(false),search=_s[0],setSearch=_s[1];
+  var _n=useState(""),fileName=_n[0],setFileName=_n[1];
+  var fr=useRef(null);
+  var hs=function(){var t=text.trim();if(!t||disabled||activeModels.length===0)return;onSend(t,file,search);setText("");setFile(null);setFileName("");};
+  var hk=function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();hs();}};
+  var hf=function(e){var f=e.target.files[0];if(!f)return;setFileName(f.name);var r=new FileReader();r.onload=function(ev){setFile(ev.target.result)};r.readAsText(f);};
+  var nA=activeModels.length;
+  return E("div",{className:"shrink-0 px-3 py-3",style:{background:"#1e293b",borderTop:"1px solid #334155"}},
+    E("div",{className:"flex items-center gap-2 mb-2"},
+      E("button",{onClick:function(){var f=fr.current;if(f)f.click()},className:"flex items-center gap-1.5 px-2.5 py-1 rounded-full transition text-xs",style:{background:file?"rgba(99,102,241,0.15)":"#334155",color:file?"#a5b4fc":"#94a3b8",border:"1px solid "+(file?"rgba(99,102,241,0.3)":"#475569")}},I("file",12),fileName?E("span",{style:{maxWidth:"120px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},fileName):"上传文件"),
+      E("input",{ref:fr,type:"file",onChange:hf,style:{display:"none"},accept:".txt,.md,.json,.csv,.py,.js,.html,.css,.xml,.yaml,.yml,.log"}),
+      E("button",{onClick:function(){setSearch(function(p){return!p})},className:"flex items-center gap-1.5 px-2.5 py-1 rounded-full transition text-xs",style:{background:search?"rgba(99,102,241,0.15)":"#334155",color:search?"#a5b4fc":"#94a3b8",border:"1px solid "+(search?"rgba(99,102,241,0.3)":"#475569")}},I("search",12),"搜索"),
+      E("div",{style:{flex:1}}),
+      E("span",{style:{fontSize:"11px",color:"#64748b"}},nA?nA+" 个模型":"未选择模型")),
+    E("div",{className:"flex gap-2"},
+      E("textarea",{value:text,onChange:function(e){setText(e.target.value)},onKeyDown:hk,placeholder:"输入问题，同时发送给所有已选模型... (Enter 发送)",rows:2,className:"flex-1 px-3 py-2 rounded-lg outline-none scrollbar",style:{background:"#0f172a",border:"1px solid #334155",color:"#e2e8f0",fontSize:"14px",fontFamily:"inherit"}}),
+      E("button",{onClick:hs,disabled:disabled||nA===0,className:"px-4 rounded-lg transition flex items-center justify-center",style:{background:(disabled||nA===0)?"#334155":nA===1?MODELS.find(function(m){return m.id===activeModels[0]}).color:"#6366f1",color:"#fff",fontSize:"13px",minWidth:"48px",opacity:(disabled||nA===0)?0.5:1,cursor:(disabled||nA===0)?"not-allowed":"pointer"}},disabled?E("span",{className:"dot-anim"},E("span",null,"."),E("span",null,"."),E("span",null,".")):I("send",18))));}
+// === SettingsModal, LockScreen, AuthGate, App ===
+
+function SettingsModal(_p){var onClose=_p.onClose;
+  var _c=useContext(AuthCtx),keys=_c.keys,setKeys=_c.setKeys,de=_c.deriveAndEncrypt;
+  var _v=useState(Object.assign({},keys)),vals=_v[0],setVals=_v[1];
+  var _s=useState(false),saving=_s[0],setSaving=_s[1];
+  var _m=useState(""),msg=_m[0],setMsg=_m[1];
+  var save=async function(){
+    setSaving(true);setMsg("");
+    try{var enc={};for(var i=0;i<MODELS.length;i++){var m=MODELS[i];if(vals[m.id])enc[m.id]=await de(vals[m.id]);}
+      setKeys(vals);setMsg("已保存并加密存储");setTimeout(function(){setMsg("");onClose();},1000);
+    }catch(e){setMsg("保存失败: "+e.message);}setSaving(false);
+  };
+  return E("div",{className:"fixed inset-0 z-50 flex items-center justify-center",style:{background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"},onClick:function(e){if(e.target===e.currentTarget)onClose();}},
+    E("div",{className:"rounded-2xl p-5 w-full max-w-md mx-4",style:{background:"#1e293b",border:"1px solid #334155"},onClick:function(e){e.stopPropagation()}},
+      E("div",{className:"flex items-center justify-between mb-4"},
+        E("h3",{style:{fontSize:"16px",fontWeight:600,color:"#f1f5f9"}},"API Key 设置"),
+        E("button",{onClick:onClose,className:"p-1 rounded hover:bg-white/10 transition",style:{color:"#94a3b8"}},I("x",18))),
+      E("div",{style:{fontSize:"12px",color:"#64748b",marginBottom:"16px",lineHeight:"1.5"}},
+        E("div",{className:"flex items-center gap-1.5 mb-1"},I("shield",12),"密钥使用 AES-256-GCM 加密存储在本地浏览器"),
+        E("div",null,"每次保存需要用主密码重新加密")),
+      MODELS.map(function(m){return E("div",{key:m.id,className:"mb-3"},
+        E("div",{className:"flex items-center gap-2 mb-1"},
+          E("div",{style:{width:8,height:8,borderRadius:"50%",background:m.color}}),
+          E("label",{style:{fontSize:"13px",fontWeight:500,color:"#cbd5e1"}},m.name)),
+        E("input",{type:"password",value:vals[m.id]||"",onChange:function(e){setVals(Object.assign({},vals,{[m.id]:e.target.value}))},placeholder:"输入 "+m.name+" API Key",className:"w-full px-3 py-2 rounded-lg outline-none",style:{background:"#0f172a",border:"1px solid #334155",color:"#e2e8f0",fontSize:"13px",fontFamily:"monospace"}}));}),
+      msg?E("div",{className:"mb-3 py-2 px-3 rounded-lg text-xs",style:{background:msg.indexOf("失败")>=0?"rgba(239,68,68,0.1)":"rgba(34,197,94,0.1)",color:msg.indexOf("失败")>=0?"#f87171":"#4ade80",border:"1px solid "+(msg.indexOf("失败")>=0?"rgba(239,68,68,0.2)":"rgba(34,197,94,0.2)")}},msg):null,
+      E("button",{onClick:save,disabled:saving,className:"w-full py-2.5 rounded-lg transition text-sm font-medium",style:{background:saving?"#334155":"#6366f1",color:"#fff",cursor:saving?"not-allowed":"pointer",opacity:saving?0.7:1}},saving?"加密保存中...":"加密并保存")));}
+
+function getPwStrength(pw){if(!pw)return{level:0,label:"",color:"#64748b"};var s=0;if(pw.length>=8)s++;if(pw.length>=12)s++;if(/[A-Z]/.test(pw))s++;if(/[0-9]/.test(pw))s++;if(/[^A-Za-z0-9]/.test(pw))s++;if(s<=1)return{level:1,label:"弱",color:"#ef4444"};if(s<=2)return{level:2,label:"一般",color:"#f59e0b"};if(s<=3)return{level:3,label:"较强",color:"#22c55e"};return{level:4,label:"强",color:"#10b981"};}
+
+function LockScreen(_p){var onUnlock=_p.onUnlock,onSetup=_p.onSetup,isSetup=_p.isSetup,error=_p.error;
+  var _p2=useState(""),pw=_p2[0],setPw=_p2[1];
+  var _p3=useState(""),pw2=_p3[0],setPw2=_p3[1];
+  var _s=useState(false),sp=_s[0],setSp=_s[1];
+  var strength=getPwStrength(pw);
+  var hs=function(e){e.preventDefault();if(isSetup){if(pw!==pw2)return;if(pw.length<6)return;onSetup(pw);}else{onUnlock(pw);}};
+  return E("div",{className:"flex items-center justify-center h-full",style:{background:"#0f172a"}},
+    E("div",{className:"w-full max-w-sm mx-4"},
+      E("div",{className:"text-center mb-8"},
+        E("div",{style:{width:56,height:56,borderRadius:"50%",background:"linear-gradient(135deg,#6366f1,#a855f7)",margin:"0 auto 16px",display:"flex",alignItems:"center",justifyContent:"center"}},I("shield",28)),
+        E("h1",{style:{fontSize:"22px",fontWeight:700,color:"#f8fafc",marginBottom:"4px"}},"MultiLLM"),
+        E("p",{style:{fontSize:"13px",color:"#64748b"}},isSetup?"首次使用，请设置主密码":"请输入主密码解锁")),
+      E("form",{onSubmit:hs},
+        E("div",{className:"mb-3"},
+          E("div",{className:"relative"},
+            E("input",{type:sp?"text":"password",value:pw,onChange:function(e){setPw(e.target.value)},placeholder:"主密码",autoFocus:true,className:"w-full px-4 py-3 rounded-xl outline-none",style:{background:"#1e293b",border:"1px solid #334155",color:"#e2e8f0",fontSize:"15px",paddingRight:"44px"}}),
+            E("button",{type:"button",onClick:function(){setSp(function(p){return!p})},className:"absolute right-3 top-1/2 -translate-y-1/2",style:{color:"#64748b"}},sp?I("eyeoff",18):I("eye",18)))),
+        isSetup?E("div",{className:"mb-3"},
+          E("input",{type:"password",value:pw2,onChange:function(e){setPw2(e.target.value)},placeholder:"确认密码",className:"w-full px-4 py-3 rounded-xl outline-none",style:{background:"#1e293b",border:"1px solid #334155",color:"#e2e8f0",fontSize:"15px"}})):null,
+        isSetup&&pw?E("div",{className:"mb-3"},
+          E("div",{className:"flex gap-1 mb-1"},[1,2,3,4].map(function(i){return E("div",{key:i,className:"flex-1 h-1.5 rounded-full",style:{background:i<=strength.level?strength.color:"#334155"}})})),
+          E("span",{style:{fontSize:"11px",color:strength.color}},strength.label)):null,
+        isSetup&&pw&&pw2&&pw!==pw2?E("div",{className:"mb-3 py-1.5 px-3 rounded-lg text-xs",style:{background:"rgba(239,68,68,0.1)",color:"#f87171"}},"两次密码不一致"):null,
+        error?E("div",{className:"mb-3 py-2 px-3 rounded-lg text-xs",style:{background:"rgba(239,68,68,0.1)",color:"#f87171",border:"1px solid rgba(239,68,68,0.2)"}},error):null,
+        E("button",{type:"submit",className:"w-full py-3 rounded-xl transition text-sm font-medium",style:{background:"#6366f1",color:"#fff"}},isSetup?"创建并进入":"解锁进入"))));}
+
+function AuthGate(_p){var children=_p.children;
+  var _ph=useState("checking"),phase=_ph[0],setPhase=_ph[1];
+  var _pw=useState(""),pw=_pw[0],setPw=_pw[1];
+  var _ks=useState({}),keys=_ks[0],setKeys=_ks[1];
+  var _er=useState(""),error=_er[0],setError=_er[1];
+  var _sa=useState(""),salt=_sa[0],setSalt=_sa[1];
+  var _ss=useState(false),showSettings=_ss[0],setShowSettings=_ss[1];
+  var _la=useState(Date.now()),lastActivity=_la[0],setLastActivity=_la[1];
+  var AUTO_LOCK_MS=30*60*1000;
+  useEffect(function(){
+    var a=getStoredAuth();
+    if(a.salt&&a.hash){setSalt(a.salt);setPhase("locked");if(a.keys){try{setKeys(JSON.parse(a.keys));}catch(e){}}}
+    else{setPhase("setup");}
+  },[]);
+  useEffect(function(){
+    var u=function(){setLastActivity(Date.now())};
+    ["mousedown","keydown","touchstart","scroll"].forEach(function(e){document.addEventListener(e,u,{passive:true})});
+    return function(){["mousedown","keydown","touchstart","scroll"].forEach(function(e){document.removeEventListener(e,u)});};
+  },[]);
+  useEffect(function(){if(phase!=="unlocked")return;var t=setInterval(function(){if(Date.now()-lastActivity>AUTO_LOCK_MS)handleLock();},5000);return function(){clearInterval(t)};},[phase,lastActivity]);
+  useEffect(function(){if(phase!=="unlocked")return;var t=setTimeout(function(){if(Date.now()-lastActivity>AUTO_LOCK_MS)handleLock();},AUTO_LOCK_MS+100);return function(){clearTimeout(t)};},[lastActivity]);
+  var handleUnlock=async function(inputPw){
+    setError("");var ok=await checkPassword(inputPw,salt,getStoredAuth().hash);if(!ok){setError("密码错误");return;}
+    setPw(inputPw);var a=getStoredAuth();
+    if(a.keys){try{var key=await deriveKey(inputPw,salt);var dec={};
+      for(var i=0;i<MODELS.length;i++){var m=MODELS[i];var enc=a.keys[m.id]||(JSON.parse(a.keys)[m.id]);if(enc){var v=await decryptData(key,enc);if(v)dec[m.id]=v;}}
+      setKeys(dec);}catch(e){console.error("decrypt keys error",e);}}
+    setPhase("unlocked");setLastActivity(Date.now());
+  };
+  var handleSetup=async function(inputPw){
+    setError("");if(inputPw.length<6){setError("密码至少6位");return;}
+    var s="";var r=crypto.getRandomValues(new Uint8Array(16));for(var i=0;i<r.length;i++)s+=r[i].toString(16).padStart(2,"0");
+    var h=await createHash(inputPw,s);setSalt(s);setPw(inputPw);saveAuth(s,h,"{}");setPhase("unlocked");setLastActivity(Date.now());
+  };
+  var handleLock=function(){setPhase("locked");setPw("");setError("");};
+  var deriveAndEncrypt=useCallback(async function(data){var key=await deriveKey(pw,salt);return encryptData(key,data);},[pw,salt]);
+  var updateKeys=useCallback(async function(newKeys){
+    setKeys(newKeys);try{var enc={};for(var i=0;i<MODELS.length;i++){var m=MODELS[i];if(newKeys[m.id])enc[m.id]=await deriveAndEncrypt(newKeys[m.id]);}
+      var a=getStoredAuth();saveAuth(a.salt,a.hash,JSON.stringify(enc));}catch(e){console.error("save keys error",e);}
+  },[deriveAndEncrypt]);
+  if(phase==="checking")return E("div",{className:"flex items-center justify-center h-screen",style:{background:"#0f172a"}},E("div",{style:{width:36,height:36,border:"3px solid #334155",borderTopColor:"#6366f1",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}));
+  if(phase==="locked"||phase==="setup")return E(LockScreen,{onUnlock:handleUnlock,onSetup:handleSetup,isSetup:phase==="setup",error:error});
+  var ctx={pw:pw,keys:keys,setKeys:updateKeys,deriveAndEncrypt:deriveAndEncrypt,lock:handleLock,showSettings:showSettings,setShowSettings:setShowSettings};
+  return E(AuthCtx.Provider,{value:ctx},children,showSettings?E(SettingsModal,{onClose:function(){setShowSettings(false)}}):null);
+}
+
+function App(){
+  var _c=useContext(AuthCtx),keys=_c.keys,lock=_c.lock,setShowSettings=_c.setShowSettings;
+  var _am=useState(MODELS.map(function(m){return m.id})),activeModels=_am[0],setActiveModels=_am[1];
+  var _ms=useState({}),modelsState=_ms[0],setModelsState=_ms[1];
+  var _dm=useState(null),detailModel=_dm[0],setDetailModel=_dm[1];
+  var _sd=useState(false),sending=_sd[0],setSending=_sd[1];
+  var _se=useState(false),searchEnabled=_se[0],setSearchEnabled=_se[1];
+  var abr=useRef({});
+  useEffect(function(){return function(){Object.values(abr.current).forEach(function(a){a.abort()});};},[]);
+  var toggleModel=function(id){setActiveModels(function(p){return p.includes(id)?p.filter(function(x){return x!==id}):p.concat([id])});};
+  var clearModel=function(id,e){if(e)e.stopPropagation();if(abr.current[id]){abr.current[id].abort();delete abr.current[id];}
+    setModelsState(function(p){var np=Object.assign({},p);np[id]={messages:[],streaming:false,streamingContent:"",error:"",thinking:false};return np;});};
+  var clearAll=function(){Object.values(abr.current).forEach(function(a){a.abort()});abr.current={};setModelsState({});setDetailModel(null);setSending(false);};
+  var sendToAll=async function(text,fileContent,search){
+    if(sending||activeModels.length===0)return;setSearchEnabled(search);setSending(true);
+    setModelsState(function(p){var init={};activeModels.forEach(function(id){var prev=p[id]||{messages:[],streaming:false,streamingContent:"",error:"",thinking:false};init[id]=Object.assign({},prev,{streaming:true,streamingContent:"",error:"",thinking:true});});return Object.assign({},p,init);});
+    var userMsg=text;
+    if(fileContent){var truncated=fileContent.length>8000?fileContent.slice(0,8000)+"\n...(文件过长，已截断)":fileContent;userMsg=text+"\n\n--- 上传文件内容 ---\n"+truncated;}
+    var promises=activeModels.map(async function(id){
+      var abort=new AbortController();abr.current[id]=abort;
+      var model=MODELS.find(function(m){return m.id===id});var apiKey=keys[id];
+      if(!apiKey){setModelsState(function(p){var np=Object.assign({},p);np[id]=Object.assign({},np[id],{streaming:false,thinking:false,error:"未设置 "+model.name+" API Key"});return np;});return;}
+      try{
+        var prevMsgs=[];setModelsState(function(p){prevMsgs=(p[id]&&p[id].messages||[]).map(function(m){return{role:m.role,content:m.content}});return p;});
+        var msgs=prevMsgs.concat([{role:"user",content:userMsg}]);
+        var useModel=model.model,tools=null;
+        if(search){if(model.searchModel)useModel=model.searchModel;if(model.searchTool)tools=[model.searchTool];}
+        if(model.type==="gemini"){
+          await streamGemini(model.api,apiKey,useModel,msgs,abort.signal,function(d){if(d.content)setModelsState(function(p){var np=Object.assign({},p);var cur=np[id]||{};np[id]=Object.assign({},cur,{thinking:false,streamingContent:(cur.streamingContent||"")+d.content});return np;});if(d.done)setModelsState(function(p){var np=Object.assign({},p);np[id]=Object.assign({},np[id]||{},{streaming:false});return np;});},{tools:tools});
+        }else{
+          await streamOpenAI(model.api,apiKey,useModel,msgs,abort.signal,function(d){if(d.content)setModelsState(function(p){var np=Object.assign({},p);var cur=np[id]||{};np[id]=Object.assign({},cur,{thinking:false,streamingContent:(cur.streamingContent||"")+d.content});return np;});if(d.done)setModelsState(function(p){var np=Object.assign({},p);np[id]=Object.assign({},np[id]||{},{streaming:false});return np;});},{tools:tools});
+        }
+      }catch(e){if(e.name!=="AbortError"){setModelsState(function(p){var np=Object.assign({},p);np[id]=Object.assign({},np[id]||{},{streaming:false,thinking:false,error:e.message});return np;});}}
+    });
+    setModelsState(function(p){var np=Object.assign({},p);activeModels.forEach(function(id){var prev=np[id]||{messages:[]};np[id]=Object.assign({},prev,{messages:prev.messages.concat([{role:"user",content:userMsg}])});});return np;});
+    await Promise.allSettled(promises);
+    setModelsState(function(p){var np=Object.assign({},p);activeModels.forEach(function(id){var cur=np[id];var sc=cur&&cur.streamingContent;if(sc&&!cur.streaming){np[id]=Object.assign({},cur,{messages:cur.messages.concat([{role:"assistant",content:sc}]),streamingContent:"",error:""});}});return np;});
+    setSending(false);
+  };
+  var nA=activeModels.length;
+  var gridCols=detailModel?"1":nA===1?"1":nA===2?"2":nA===3?"3":"4";
+  if(detailModel){var dm=MODELS.find(function(x){return x.id===detailModel});
+    return E("div",{id:"app-root",className:"flex flex-col h-full",style:{background:"#0f172a"}},E(Detail,{model:dm,state:modelsState[detailModel]||{},onBack:function(){setDetailModel(null)},onClear:function(){clearModel(detailModel)}}));}
+  return E("div",{id:"app-root",className:"flex flex-col h-full",style:{background:"#0f172a"}},
+    E("div",{className:"flex items-center gap-2 px-3 py-2.5 shrink-0",style:{background:"#1e293b",borderBottom:"1px solid #334155"}},
+      E("div",{style:{width:28,height:28,borderRadius:"50%",background:"linear-gradient(135deg,#6366f1,#a855f7)",display:"flex",alignItems:"center",justifyContent:"center",marginRight:"4px"}},I("shield",14)),
+      E("span",{style:{fontSize:"14px",fontWeight:700,color:"#f8fafc",marginRight:"8px"}},"MultiLLM"),
+      MODELS.map(function(m){return E("button",{key:m.id,onClick:function(){toggleModel(m.id)},className:"model-btn flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition "+(activeModels.includes(m.id)?"active":""),style:{color:m.color,background:activeModels.includes(m.id)?m.bg:"transparent"}},E("div",{style:{width:6,height:6,borderRadius:"50%",background:m.color}}),m.name);}),
+      E("div",{style:{flex:1}}),
+      E("button",{onClick:function(){setShowSettings(true)},className:"p-1.5 rounded-lg transition",style:{color:"#94a3b8"},title:"API 设置"},I("settings",16)),
+      E("button",{onClick:clearAll,className:"p-1.5 rounded-lg transition",style:{color:"#94a3b8"},title:"清空所有"},I("trash",16)),
+      E("button",{onClick:lock,className:"p-1.5 rounded-lg transition",style:{color:"#94a3b8"},title:"锁定"},I("lock",16))),
+    E("div",{className:"flex-1 overflow-hidden p-2",style:{display:"grid",gridTemplateColumns:"repeat("+gridCols+",1fr)",gap:"8px"}},
+      (nA===0?MODELS:MODELS.filter(function(m){return activeModels.includes(m.id)})).map(function(m){return E(Panel,{key:m.id,model:m,state:modelsState[m.id]||{},onExpand:function(){setDetailModel(m.id)},onClear:function(e){clearModel(m.id,e)}});})),
+    E(Input,{onSend:sendToAll,disabled:sending,activeModels:activeModels}));
+}
+
+var root=ReactDOM.createRoot(document.getElementById("root"));
+root.render(E(AuthGate,null,E(App)));
+
+</script>
+</body>
+</html>
