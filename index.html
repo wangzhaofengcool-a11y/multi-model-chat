@@ -55,7 +55,9 @@ var MODELS=[
   {id:"deepseek",name:"DeepSeek",color:"#6366f1",bg:"rgba(99,102,241,0.08)",border:"rgba(99,102,241,0.2)",api:"https://api.deepseek.com/v1/chat/completions",model:"deepseek-chat",type:"openai",searchModel:null,searchTool:null},
   {id:"chatgpt",name:"ChatGPT",color:"#22c55e",bg:"rgba(34,197,94,0.08)",border:"rgba(34,197,94,0.2)",api:"https://api.openai.com/v1/chat/completions",model:"gpt-4o",type:"openai",searchModel:"gpt-4o-search-preview",searchTool:null},
   {id:"gemini",name:"Gemini",color:"#f59e0b",bg:"rgba(245,158,11,0.08)",border:"rgba(245,158,11,0.2)",api:"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",model:"gemini-2.5-flash",type:"gemini",searchModel:null,searchTool:{google_search:{}}},
-  {id:"glm",name:"GLM",color:"#a855f7",bg:"rgba(168,85,247,0.08)",border:"rgba(168,85,247,0.2)",api:"https://open.bigmodel.cn/api/paas/v4/chat/completions",model:"glm-4-plus",type:"openai",searchModel:null,searchTool:{type:"web_search",web_search:{enable:true}}}
+  {id:"glm",name:"GLM",color:"#a855f7",bg:"rgba(168,85,247,0.08)",border:"rgba(168,85,247,0.2)",api:"https://open.bigmodel.cn/api/paas/v4/chat/completions",model:"glm-4-plus",type:"openai",searchModel:null,searchTool:{type:"web_search",web_search:{enable:true}}},
+  {id:"minimax",name:"MiniMax",color:"#f97316",bg:"rgba(249,115,22,0.08)",border:"rgba(249,115,22,0.2)",api:"https://api.minimax.chat/v1/chat/completions",model:"MiniMax-M2.5",type:"openai",searchModel:null,searchTool:null},
+  {id:"kimi",name:"Kimi",color:"#06b6d4",bg:"rgba(6,182,212,0.08)",border:"rgba(6,182,212,0.2)",api:"https://api.moonshot.cn/v1/chat/completions",model:"kimi-k2.5",type:"openai",searchModel:null,searchTool:null}
 ];
 // Crypto
 async function deriveKey(pw,salt){var t=new TextEncoder;var k=await crypto.subtle.importKey("raw",t.encode(pw),"PBKDF2",false,["deriveKey"]);return crypto.subtle.deriveKey({name:"PBKDF2",salt:t.encode(salt),iterations:600000,hash:"SHA-256"},k,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);}
@@ -179,6 +181,7 @@ function Detail(_p){var model=_p.model,state=_p.state,onBack=_p.onBack,onClear=_
     try{
       var m=MODELS.find(function(x){return x.id===id});
       var ma=nm.map(function(x){return{role:x.role,content:x.content}});
+      var now2=new Date();var today2=now2.toISOString().slice(0,10);var wdays2=["星期日","星期一","星期二","星期三","星期四","星期五","星期六"];var wd2=wdays2[now2.getDay()];ma=[{role:"system",content:"当前日期是"+today2+" "+wd2+"。"}].concat(ma);
       if(m.type==="gemini"){await streamGemini(m.api,ak,m.model,ma,ac.signal,function(d){if(d.content)setDC(function(p){return p+d.content});if(d.done)setDS(false);});}
       else{await streamOpenAI(m.api,ak,m.model,ma,ac.signal,function(d){if(d.content)setDC(function(p){return p+d.content});if(d.done)setDS(false);});}
     }catch(e){if(e.name!=="AbortError"){setDE(e.message);setDS(false);}}
@@ -350,8 +353,9 @@ function App(){
       try{
         var prevMsgs=[];setModelsState(function(p){prevMsgs=(p[id]&&p[id].messages||[]).map(function(m){return{role:m.role,content:m.content}});return p;});
         var msgs=prevMsgs.concat([{role:"user",content:userMsg}]);
+        var now=new Date();var today=now.toISOString().slice(0,10);var weekdays=["星期日","星期一","星期二","星期三","星期四","星期五","星期六"];var wd=weekdays[now.getDay()];msgs=[{role:"system",content:"当前日期是"+today+" "+wd+"。"}].concat(msgs);
         var useModel=model.model,tools=null,extraOpts=null;
-        if(search){var today=(new Date()).toISOString().slice(0,10);msgs=[{role:"system",content:"当前日期是"+today+"。如果问题涉及时效性信息，请进行网络搜索获取最新数据。"}].concat(msgs);if(model.searchModel)useModel=model.searchModel;if(model.searchTool)tools=[model.searchTool];if(model.id==="chatgpt")extraOpts={web_search_options:{}};}
+        if(search){if(model.searchModel)useModel=model.searchModel;if(model.searchTool)tools=[model.searchTool];if(model.id==="chatgpt")extraOpts={web_search_options:{}};}
         if(model.type==="gemini"){
           await streamGemini(model.api,apiKey,useModel,msgs,abort.signal,function(d){if(d.content)setModelsState(function(p){var np=Object.assign({},p);var cur=np[id]||{};np[id]=Object.assign({},cur,{thinking:false,streamingContent:(cur.streamingContent||"")+d.content});return np;});if(d.done)setModelsState(function(p){var np=Object.assign({},p);np[id]=Object.assign({},np[id]||{},{streaming:false});return np;});},extraOpts?Object.assign({tools:tools},extraOpts):{tools:tools});
         }else{
